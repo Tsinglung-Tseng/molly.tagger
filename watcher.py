@@ -11,6 +11,7 @@ Molly Tagger Watcher Service
 import os
 import sys
 import time
+import signal
 import logging
 import sqlite3
 import argparse
@@ -18,6 +19,25 @@ import queue
 import threading
 from pathlib import Path
 from threading import Timer
+
+
+# ---------------------------------------------------------------------------
+# Parent-death detection: exit when Molly (parent) dies
+# ---------------------------------------------------------------------------
+
+def _watch_parent():
+    """Background thread: exit when parent process dies (PPID becomes 1/launchd)."""
+    parent_pid = os.getppid()
+    while True:
+        time.sleep(2)
+        if os.getppid() != parent_pid:
+            logging.getLogger('tagger-watcher').info(
+                f"Parent process {parent_pid} died (ppid now {os.getppid()}), exiting."
+            )
+            os.kill(os.getpid(), signal.SIGTERM)
+            break
+
+threading.Thread(target=_watch_parent, daemon=True).start()
 
 # --- 路径配置 ---
 BASE_DIR = Path(__file__).parent.resolve()
@@ -111,6 +131,11 @@ class TaggerPipeline:
             return
 
         try:
+            # 文件已被删除（创建后立即删除等场景），跳过处理
+            if not file_path.exists():
+                log.debug(f"  - file gone, skip: {file_path.name}")
+                return
+
             # 预检 hash：内容未变则跳过，避免 tag 回写触发二次处理
             current_hash = self._file_hash(file_path)
             cursor = self._tagger.conn.cursor()
@@ -143,6 +168,8 @@ class TaggerPipeline:
             log.info(f"  ✓ done: {file_path.name} (extracted={extracted}, saved={saved})")
             print("MOLLY_STATUS: idle", flush=True)
 
+        except FileNotFoundError:
+            log.debug(f"  - file gone during processing, skip: {file_path.name}")
         except Exception as e:
             log.error(f"  ✗ error [{file_path.name}]: {e}", exc_info=True)
             print(f"MOLLY_STATUS: error {e}", flush=True)
@@ -186,7 +213,7 @@ class MarkdownHandler:
         p = Path(path)
         if not self._should_handle(p):
             return
-        log.info(f"[change] {p.name}")
+        log.debug(f"[change] {p.name}")
         self._debounce(path)
 
     # --- private ---
