@@ -251,6 +251,10 @@ class LLMTagger:
     def connect(self):
         self.conn = sqlite3.connect(str(self.db_path))
         self.conn.row_factory = sqlite3.Row
+        schema_path = Path(__file__).parent / "schema.sql"
+        if schema_path.exists():
+            self.conn.executescript(schema_path.read_text(encoding="utf-8"))
+            self.conn.commit()
 
     def close(self):
         if self.conn:
